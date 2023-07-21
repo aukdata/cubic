@@ -10,12 +10,13 @@
 #define SS3_SER 8
 #define SS4_SER 9
 
-int main()
+typedef struct
 {
-    stdio_init_all();
+    uint8_t frame[5][13];
+} cube_t;
 
-    puts("INITIALIZING...");
-
+void initialize_gpio()
+{
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_init(COM_RCLK);
     gpio_init(COM_SRCLK);
@@ -32,76 +33,79 @@ int main()
     gpio_set_dir(SS3_SER, GPIO_OUT);
     gpio_set_dir(SS4_SER, GPIO_OUT);
 
-    gpio_put(PICO_DEFAULT_LED_PIN, true);
+    gpio_put(PICO_DEFAULT_LED_PIN, 1);
     gpio_put(COM_RCLK, 0);
     gpio_put(COM_SRCLK, 0);
     gpio_put(SS1_SER, 0);
     gpio_put(SS2_SER, 0);
     gpio_put(SS3_SER, 0);
     gpio_put(SS4_SER, 0);
+}
 
-    uint32_t cube[5] = {
-        0b1010101010101010101010101,
-        0b0101010101010101010101010,
-        0b1010101010101010101010101,
-        0b0101010101010101010101010,
-        0b1010101010101010101010101,
-    };
+bool update_frame(repeating_timer_t *rt)
+{
+    cube_t *cube = rt->user_data;
+    static int brightness;
 
-    uint8_t cube_g[5][13] = {
-        { 0 | 1 << 4, 2 | 3 << 4, 4 | 5 << 4, 6 | 7 << 4, 8 | 9 << 4, 10 | 11 << 4, 12 | 13 << 4, 14 | 15 << 4 },
-        { 0 | 1 << 4, 2 | 3 << 4, 4 | 5 << 4, 6 | 7 << 4, 8 | 9 << 4, 10 | 11 << 4, 12 | 13 << 4, 14 | 15 << 4 },
-        { 0 | 1 << 4, 2 | 3 << 4, 4 | 5 << 4, 6 | 7 << 4, 8 | 9 << 4, 10 | 11 << 4, 12 | 13 << 4, 14 | 15 << 4 },
-        { 0 | 1 << 4, 2 | 3 << 4, 4 | 5 << 4, 6 | 7 << 4, 8 | 9 << 4, 10 | 11 << 4, 12 | 13 << 4, 14 | 15 << 4 },
-        { 0 | 1 << 4, 2 | 3 << 4, 4 | 5 << 4, 6 | 7 << 4, 8 | 9 << 4, 10 | 11 << 4, 12 | 13 << 4, 14 | 15 << 4 },
-    };
+    brightness = (brightness + 1) & 0x0f;
+    printf("update frame: brn=%d\n", brightness);
+
+    for (int i = 0; i < 5; i++)
+    {
+        for (int j = 0; j < 13; j++)
+        {
+            cube->frame[i][j] = brightness | brightness << 4;
+        }
+    }
+
+    return true;
+}
+
+int main()
+{
+    stdio_init_all();
+
+    puts("INITIALIZING...");
+
+    initialize_gpio();
+
+    cube_t cube = {};
+
+    repeating_timer_t rt;
+    add_repeating_timer_ms(-1000, update_frame, &cube, &rt);
 
     while (true)
     {
-        for (int c = 0; c <= 200; c++)
+        for (int j = 0; j < 16; j++)
         {
-            for (int j = 0; j < 16; j++)
+            for (int layer = 0; layer < 5; layer++)
             {
-                for (int layer = 0; layer < 5; layer++)
+                gpio_put(COM_RCLK, 0);
+
+                for (int q_num = 7; q_num >= 0; q_num--)
                 {
-                    gpio_put(COM_RCLK, 0);
-                    sleep_us(1);
+                    gpio_put(COM_SRCLK, 0);
+                    
+                    size_t odd_shift = 4 * (q_num % 2);
+                    gpio_put(SS1_SER, !(j < (cube.frame[layer][( 0 + q_num) / 2] >> odd_shift & 0x0f)));
+                    gpio_put(SS2_SER, !(j < (cube.frame[layer][( 8 + q_num) / 2] >> odd_shift & 0x0f)));
+                    gpio_put(SS3_SER, !(j < (cube.frame[layer][(16 + q_num) / 2] >> odd_shift & 0x0f)));
 
-                    for (int i = 7; i >= 0; i--)
+                    if (q_num == 0)
                     {
-                        gpio_put(COM_SRCLK, 0);
-                        sleep_us(1);
-                        
-                        gpio_put(SS1_SER, !(cube[layer] >> ( 0 + i) & 1));
-                        gpio_put(SS2_SER, !(cube[layer] >> ( 8 + i) & 1));
-                        gpio_put(SS3_SER, !(cube[layer] >> (16 + i) & 1));
-
-                        if (i == 0)
-                        {
-                            gpio_put(SS4_SER, !(cube[layer] >> 24));
-                            puts("i = 0");
-                        }
-                        else
-                        {
-                            gpio_put(SS4_SER, (i - 1) == layer);
-                            printf("i = %d, layer = %d, cond = %d\n", i, layer, (i - 1) == layer);
-                        }
-
-                        sleep_us(1);
-
-                        gpio_put(COM_SRCLK, 1);
-                        sleep_us(1);
+                        gpio_put(SS4_SER, !(j < (cube.frame[layer][(24 + q_num) / 2] >> odd_shift & 0x0f)));
+                    }
+                    else
+                    {
+                        gpio_put(SS4_SER, (q_num - 1) == layer);
                     }
 
-                    gpio_put(COM_RCLK, 1);
-                    sleep_us(1000);
+                    gpio_put(COM_SRCLK, 1);
                 }
-            }
-        }
 
-        for (int i = 0; i < 5; i++)
-        {
-            cube[i] = ~cube[i];
+                gpio_put(COM_RCLK, 1);
+                sleep_us(16 + 8 * j);
+            }
         }
     }
 
