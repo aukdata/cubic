@@ -10,9 +10,16 @@
 #define SS3_SER 8
 #define SS4_SER 9
 
+#define SD_CS 16
+#define SD_DI 17
+#define SD_SCLK 18
+#define SD_DO 19
+#define SD_DETECT 20
+
 typedef struct
 {
     uint8_t frame[5][13];
+    int32_t duration;
 } cube_t;
 
 void initialize_gpio()
@@ -24,6 +31,7 @@ void initialize_gpio()
     gpio_init(SS2_SER);
     gpio_init(SS3_SER);
     gpio_init(SS4_SER);
+    gpio_init(SD_DETECT);
 
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_set_dir(COM_RCLK, GPIO_OUT);
@@ -32,6 +40,7 @@ void initialize_gpio()
     gpio_set_dir(SS2_SER, GPIO_OUT);
     gpio_set_dir(SS3_SER, GPIO_OUT);
     gpio_set_dir(SS4_SER, GPIO_OUT);
+    gpio_set_dir(SD_DETECT, GPIO_IN);
 
     gpio_put(PICO_DEFAULT_LED_PIN, 1);
     gpio_put(COM_RCLK, 0);
@@ -40,6 +49,8 @@ void initialize_gpio()
     gpio_put(SS2_SER, 0);
     gpio_put(SS3_SER, 0);
     gpio_put(SS4_SER, 0);
+
+    gpio_pull_up(SD_DETECT);
 }
 
 bool update_frame(repeating_timer_t *rt)
@@ -63,11 +74,19 @@ bool update_frame(repeating_timer_t *rt)
 
 int main()
 {
+    // initialize serial communication
     stdio_init_all();
 
     puts("INITIALIZING...");
 
     initialize_gpio();
+
+    FRESULT res;
+    FATFS fs = {};
+    res = f_mount(&fs, "0:", 0);
+
+    FIL fp = {};
+    res = f_open(&fp, "0:test.txt", FA_READ);
 
     cube_t cube = {};
 

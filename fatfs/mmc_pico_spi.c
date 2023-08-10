@@ -15,15 +15,15 @@
 #include "hardware/spi.h"
 
 /*
-   GPIO 16 (pin 21) MISO/spi0_rx-> SDO
-   GPIO 17 (pin 22) Chip select -> !CS
+   GPIO 17 (pin 21) MISO/spi0_rx-> SDO
+   GPIO 16 (pin 22) Chip select -> !CS
    GPIO 18 (pin 24) SCK/spi0_sclk -> SCK
    GPIO 19 (pin 25) MOSI/spi0_tx -> SDI
 */
-#define DEF_SPI_TX_PIN  19
-#define DEF_SPI_RX_PIN  16
+#define DEF_SPI_TX_PIN  17
+#define DEF_SPI_RX_PIN  19
 #define DEF_SPI_SCK_PIN 18
-#define DEF_SPI_CSN_PIN 17
+#define DEF_SPI_CSN_PIN 16
 
 #define SPIDEV      spi0
 
