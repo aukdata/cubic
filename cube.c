@@ -22,6 +22,13 @@ typedef struct
     int32_t duration;
 } cube_t;
 
+typedef struct
+{
+    FIL fp;
+    uint64_t size;
+    cube_t cube;
+} shared_t;
+
 void initialize_gpio()
 {
     gpio_init(PICO_DEFAULT_LED_PIN);
@@ -55,18 +62,39 @@ void initialize_gpio()
 
 bool update_frame(repeating_timer_t *rt)
 {
-    cube_t *cube = rt->user_data;
-    static int brightness;
+    shared_t *shared = rt->user_data;
+    static int32_t counter;
 
-    brightness = (brightness + 1) & 0x0f;
-    printf("update frame: brn=%d\n", brightness);
-
-    for (int i = 0; i < 5; i++)
+    if (counter <= 0)
     {
-        for (int j = 0; j < 13; j++)
+        size_t read_size1, read_size2;
+        FRESULT res1 = f_read(&shared->fp, &shared->cube.frame, 5 * 13, &read_size1);
+        FRESULT res2 = f_read(&shared->fp, &shared->cube.duration, 4, &read_size2);
+
+        if (res1 == FR_OK && read_size1 == 5 * 13 && res2 == FR_OK && read_size2 == 4)
         {
-            cube->frame[i][j] = brightness | brightness << 4;
+            printf("successfully updated: duration = %d\n", shared->cube.duration);
+
+            counter = shared->cube.duration;
         }
+        else
+        {
+            puts("error on reading or eof");
+
+            counter = 1000;
+
+            for (int i = 0; i < 5; i++)
+            {
+                for (int j = 0; j < 13; j++)
+                {
+                    shared->cube.frame[i][j] = 0xff;
+                }
+            }
+        }
+    }
+    else
+    {
+        counter--;
     }
 
     return true;
@@ -77,21 +105,60 @@ int main()
     // initialize serial communication
     stdio_init_all();
 
+    sleep_ms(5000);
+
     puts("INITIALIZING...");
+    printf("build timestamp: %s %s\n", __DATE__, __TIME__);
 
     initialize_gpio();
 
+    if (false && gpio_get(SD_DETECT))
+    {
+        while (true)
+        {
+            puts("sd card is not set");
+            sleep_ms(1000);
+        }
+    }
+    else
+    {
+        puts("sd card is set");
+    }
+
     FRESULT res;
     FATFS fs = {};
-    res = f_mount(&fs, "0:", 0);
+    res = f_mount(&fs, "0:", 1);
+    if (res != FR_OK || fs.fs_type == 0)
+    {
+        while (true)
+        {
+            printf("failed to mount sd card: res = %d, type = %d\n", res, fs.fs_type);
+            sleep_ms(1000);
+        }
+    }
+    else
+    {
+        printf("successfully mounted sd card: type = %d", fs.fs_type);
+    }
 
-    FIL fp = {};
-    res = f_open(&fp, "0:test.txt", FA_READ);
-
-    cube_t cube = {};
+    shared_t shared = {};
+    
+    res = f_open(&shared.fp, "0:test.cbi", FA_READ);
+    if (res != FR_OK)
+    {
+        while (true)
+        {
+            printf("failed to open test.cbi: %d\n", res);
+            sleep_ms(1000);
+        }
+    }
+    else
+    {
+        puts("successfully opened test.cbi");
+    }
 
     repeating_timer_t rt;
-    add_repeating_timer_ms(-1000, update_frame, &cube, &rt);
+    add_repeating_timer_us(-1000, update_frame, &shared, &rt);
 
     while (true)
     {
@@ -106,13 +173,13 @@ int main()
                     gpio_put(COM_SRCLK, 0);
                     
                     size_t odd_shift = 4 * (q_num % 2);
-                    gpio_put(SS1_SER, !(j < (cube.frame[layer][( 0 + q_num) / 2] >> odd_shift & 0x0f)));
-                    gpio_put(SS2_SER, !(j < (cube.frame[layer][( 8 + q_num) / 2] >> odd_shift & 0x0f)));
-                    gpio_put(SS3_SER, !(j < (cube.frame[layer][(16 + q_num) / 2] >> odd_shift & 0x0f)));
+                    gpio_put(SS1_SER, !(j < (shared.cube.frame[layer][( 0 + q_num) / 2] >> odd_shift & 0x0f)));
+                    gpio_put(SS2_SER, !(j < (shared.cube.frame[layer][( 8 + q_num) / 2] >> odd_shift & 0x0f)));
+                    gpio_put(SS3_SER, !(j < (shared.cube.frame[layer][(16 + q_num) / 2] >> odd_shift & 0x0f)));
 
                     if (q_num == 0)
                     {
-                        gpio_put(SS4_SER, !(j < (cube.frame[layer][(24 + q_num) / 2] >> odd_shift & 0x0f)));
+                        gpio_put(SS4_SER, !(j < (shared.cube.frame[layer][(24 + q_num) / 2] >> odd_shift & 0x0f)));
                     }
                     else
                     {
