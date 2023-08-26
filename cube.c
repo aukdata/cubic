@@ -16,18 +16,19 @@
 #define SD_DO 19
 #define SD_DETECT 20
 
+#if 0
+#define debug_puts(str) puts((str))
+#else
+#define debug_puts(_)
+#endif
+
 typedef struct
 {
     uint8_t frame[5][13];
     int32_t duration;
 } cube_t;
 
-typedef struct
-{
-    FIL fp;
-    uint64_t size;
-    cube_t cube;
-} shared_t;
+volatile cube_t cube;
 
 void initialize_gpio()
 {
@@ -60,41 +61,162 @@ void initialize_gpio()
     gpio_pull_up(SD_DETECT);
 }
 
-bool update_frame(repeating_timer_t *rt)
+void set_cube_value(const size_t x, const size_t y, const size_t z, const int8_t v)
 {
-    shared_t *shared = rt->user_data;
-    static int32_t counter;
+    const size_t odd_shift = 4 * ((5 * x + z) % 2);
+    cube.frame[y][(5 * x + z) / 2] &= ~(0x0f << odd_shift);
+    cube.frame[y][(5 * x + z) / 2] |= (v & 0x0f) << odd_shift;
+}
 
-    if (counter <= 0)
+void fill_cube_with_value(const int8_t v)
+{
+    for (size_t i=0; i < 5; i++)
     {
-        size_t read_size1, read_size2;
-        FRESULT res1 = f_read(&shared->fp, &shared->cube.frame, 5 * 13, &read_size1);
-        FRESULT res2 = f_read(&shared->fp, &shared->cube.duration, 4, &read_size2);
-
-        if (res1 == FR_OK && read_size1 == 5 * 13 && res2 == FR_OK && read_size2 == 4)
+        for (size_t j=0; j < 13; j++)
         {
-            printf("successfully updated: duration = %d\n", shared->cube.duration);
-
-            counter = shared->cube.duration;
+            cube.frame[i][j] = (v & 0x0f) | ((v & 0x0f) << 4);
         }
-        else
+    }
+}
+
+void set_error_cube_pattern_and_halt()
+{
+    fill_cube_with_value(0);
+    while (true)
+    {
+
+        for (size_t i=0; i < 125; i++)
         {
-            puts("error on reading or eof");
+            const size_t y = i / 25;
+            const size_t x = (i % 25) / 5;
+            const size_t z = i % 5;
 
-            counter = 1000;
+            const size_t i2 = (i + 1) % 125;
+            const size_t y2 = i2 / 25;
+            const size_t x2 = (i2 % 25) / 5;
+            const size_t z2 = i2 % 5;
 
-            for (int i = 0; i < 5; i++)
+            for (size_t v=0; v < 16; v++)
             {
-                for (int j = 0; j < 13; j++)
-                {
-                    shared->cube.frame[i][j] = 0xff;
-                }
+                set_cube_value(x, y, z, 15 - v);
+                set_cube_value(x2, y2, z2, v);
+
+                sleep_ms(25);
             }
         }
     }
+}
+
+bool open_file(const TCHAR* path, FIL *fpp)
+{
+    FRESULT res;
+    FATFS fs = {};
+
+    if (gpio_get(SD_DETECT))
+    {
+        puts("SD card is not set");
+        return false;
+    }
     else
     {
-        counter--;
+        puts("SD card is set.");
+    }
+
+    const TCHAR drive[3] = { path[0], path[1], '\0' };
+    res = f_mount(&fs, "0:", 1);
+    if (res != FR_OK || fs.fs_type == 0)
+    {
+        printf("Failed to mount SD card (result = %d, filesystem type = %d)\n", res, fs.fs_type);
+        return false;
+    }
+    else
+    {
+        printf("Successfully mounted SD card (filesystem type = %d)\n", fs.fs_type);
+    }
+
+    res = f_open(fpp, path, FA_READ);
+    if (res != FR_OK)
+    {
+        printf("Failed to open test.cbi: %d\n", res);
+        return false;
+    }
+    else
+    {
+        puts("Successfully opened test.cbi");
+    }
+
+    return true;
+}
+
+bool update_frame(repeating_timer_t *rtp)
+{
+    static int64_t c;
+    gpio_put(PICO_DEFAULT_LED_PIN, c / 10000);
+    if (c++ == 20000) c = 0;
+
+    static size_t i;
+    static size_t j;
+    static int layer;
+    // printf("i = %d, j = %d, layer = %d\n", i, j, layer);
+
+    debug_puts("a");
+
+    if (j + 2 <= i)
+    {
+        debug_puts("a'1");
+        i = 0;
+    }
+    else
+    {
+        debug_puts("a'2");
+        i++;
+        return true;
+    }
+    debug_puts("b");
+
+    gpio_put(COM_RCLK, 0);
+    debug_puts("c");
+
+    for (int q_num = 7; q_num >= 0; q_num--)
+    {
+        gpio_put(COM_SRCLK, 0);
+        debug_puts("c'");
+        
+        if (5 <= layer) printf("layer = %d", layer);
+        if (13 <= ( 0 + q_num) / 2) printf("( 0 + q_num) / 2 = %d\n", ( 0 + q_num) / 2);
+        if (13 <= ( 8 + q_num) / 2) printf("( 8 + q_num) / 2 = %d\n", ( 8 + q_num) / 2);
+        if (13 <= (16 + q_num) / 2) printf("(16 + q_num) / 2 = %d\n", (16 + q_num) / 2);
+
+        const size_t odd_shift = 4 * (q_num % 2);
+        gpio_put(SS1_SER, (cube.frame[layer][( 0 + q_num) / 2] >> odd_shift & 0x0f) <= j);
+        gpio_put(SS2_SER, (cube.frame[layer][( 8 + q_num) / 2] >> odd_shift & 0x0f) <= j);
+        gpio_put(SS3_SER, (cube.frame[layer][(16 + q_num) / 2] >> odd_shift & 0x0f) <= j);
+
+        if (q_num == 0)
+        {
+            gpio_put(SS4_SER, (cube.frame[layer][12] >> odd_shift & 0x0f) <= j);
+        }
+        else
+        {
+            gpio_put(SS4_SER, (q_num - 1) == 4 - layer);
+        }
+
+        gpio_put(COM_SRCLK, 1);
+    }
+    debug_puts("d");
+
+    gpio_put(COM_RCLK, 1);
+
+    layer++;
+    if (5 <= layer)
+    {
+        layer = 0;
+
+        j++;
+        if (16 <= j)
+        {
+            j = 0;
+        }
     }
 
     return true;
@@ -105,93 +227,70 @@ int main()
     // initialize serial communication
     stdio_init_all();
 
-    sleep_ms(5000);
+    sleep_ms(1000);
 
     puts("INITIALIZING...");
-    printf("build timestamp: %s %s\n", __DATE__, __TIME__);
+    printf("Build timestamp: %s %s\n", __DATE__, __TIME__);
 
     initialize_gpio();
 
-    if (false && gpio_get(SD_DETECT))
+    FIL fp = {};
+    bool suc_open = true;//open_file("0:test.cbi", &fp);
+    if (suc_open)
     {
-        while (true)
-        {
-            puts("sd card is not set");
-            sleep_ms(1000);
-        }
+        puts("Using cube patterns from SD card");
     }
     else
     {
-        puts("sd card is set");
+        puts("No cube patterns");
     }
 
-    FRESULT res;
-    FATFS fs = {};
-    res = f_mount(&fs, "0:", 1);
-    if (res != FR_OK || fs.fs_type == 0)
-    {
-        while (true)
-        {
-            printf("failed to mount sd card: res = %d, type = %d\n", res, fs.fs_type);
-            sleep_ms(1000);
-        }
+    static repeating_timer_t rt = {};
+    bool suc_timer = add_repeating_timer_us(16, &update_frame, NULL, &rt);
+    if (suc_timer) {
+        puts("Successfully registered a repeating timer");
     }
     else
     {
-        printf("successfully mounted sd card: type = %d", fs.fs_type);
+        puts("No slot for timer");
     }
 
-    shared_t shared = {};
-    
-    res = f_open(&shared.fp, "0:test.cbi", FA_READ);
-    if (res != FR_OK)
+    if (!suc_open || !suc_timer)
     {
-        while (true)
-        {
-            printf("failed to open test.cbi: %d\n", res);
-            sleep_ms(1000);
-        }
-    }
-    else
-    {
-        puts("successfully opened test.cbi");
+        set_error_cube_pattern_and_halt();
     }
 
-    repeating_timer_t rt;
-    add_repeating_timer_us(-1000, update_frame, &shared, &rt);
+    puts("Successfully initialized!");
+
+    set_error_cube_pattern_and_halt();
 
     while (true)
     {
-        for (int j = 0; j < 16; j++)
+        size_t read_size1, read_size2;
+        cube_t temp;
+        FRESULT res1 = f_read(&fp, &temp.frame, 5 * 13, &read_size1);
+        FRESULT res2 = f_read(&fp, &temp.duration, 4, &read_size2);
+        cube = temp;
+
+        if (res1 == FR_OK && read_size1 == 5 * 13 && res2 == FR_OK && read_size2 == 4)
         {
-            for (int layer = 0; layer < 5; layer++)
+            printf("Successfully updated: duration = %d\n", cube.duration);
+
+            sleep_ms(cube.duration);
+        }
+        else
+        {
+            puts("Error on reading or EOF");
+
+            for (int i = 0; i < 5; i++)
             {
-                gpio_put(COM_RCLK, 0);
-
-                for (int q_num = 7; q_num >= 0; q_num--)
+                for (int j = 0; j < 13; j++)
                 {
-                    gpio_put(COM_SRCLK, 0);
-                    
-                    size_t odd_shift = 4 * (q_num % 2);
-                    gpio_put(SS1_SER, !(j < (shared.cube.frame[layer][( 0 + q_num) / 2] >> odd_shift & 0x0f)));
-                    gpio_put(SS2_SER, !(j < (shared.cube.frame[layer][( 8 + q_num) / 2] >> odd_shift & 0x0f)));
-                    gpio_put(SS3_SER, !(j < (shared.cube.frame[layer][(16 + q_num) / 2] >> odd_shift & 0x0f)));
-
-                    if (q_num == 0)
-                    {
-                        gpio_put(SS4_SER, !(j < (shared.cube.frame[layer][(24 + q_num) / 2] >> odd_shift & 0x0f)));
-                    }
-                    else
-                    {
-                        gpio_put(SS4_SER, (q_num - 1) == layer);
-                    }
-
-                    gpio_put(COM_SRCLK, 1);
+                    cube.frame[i][j] = 0xff;
                 }
-
-                gpio_put(COM_RCLK, 1);
-                sleep_us(16 + 8 * j);
             }
+
+            sleep_ms(1000);
         }
     }
 
