@@ -82,9 +82,9 @@ void fill_cube_with_value(const int8_t v)
 void set_error_cube_pattern_and_halt()
 {
     fill_cube_with_value(0);
+
     while (true)
     {
-
         for (size_t i=0; i < 125; i++)
         {
             const size_t y = i / 25;
@@ -100,55 +100,120 @@ void set_error_cube_pattern_and_halt()
             {
                 set_cube_value(x, y, z, 15 - v);
                 set_cube_value(x2, y2, z2, v);
-
-                sleep_ms(25);
+                sleep_ms(5);
             }
         }
     }
 }
 
-bool open_file(const TCHAR* path, FIL *fpp)
+bool mount_sd(const TCHAR* drive, FATFS *fsp)
 {
-    FRESULT res;
-    FATFS fs = {};
-
     if (gpio_get(SD_DETECT))
     {
         puts("SD card is not set");
         return false;
     }
-    else
-    {
-        puts("SD card is set.");
-    }
 
-    const TCHAR drive[3] = { path[0], path[1], '\0' };
-    res = f_mount(&fs, "0:", 1);
-    if (res != FR_OK || fs.fs_type == 0)
+    puts("SD card is set.");
+
+    puts("Mounting SD card...");
+
+    FRESULT res = f_mount(fsp, drive, 1);
+    if (res != FR_OK || fsp->fs_type == 0)
     {
-        printf("Failed to mount SD card (result = %d, filesystem type = %d)\n", res, fs.fs_type);
+        printf("Failed to mount SD card (result = %d, filesystem type = %d)\n", res, fsp->fs_type);
         return false;
     }
-    else
-    {
-        printf("Successfully mounted SD card (filesystem type = %d)\n", fs.fs_type);
-    }
+    
+    printf("Successfully mounted SD card (filesystem type = %d)\n", fsp->fs_type);
+    
+    return true;
+}
 
-    res = f_open(fpp, path, FA_READ);
+bool open_file(const TCHAR* path, FIL *fpp)
+{
+    printf("Opening file %s\n", path);
+
+    FRESULT res = f_open(fpp, path, FA_READ);
     if (res != FR_OK)
     {
-        printf("Failed to open test.cbi: %d\n", res);
+        printf("Failed to open %s: %d\n", path, res);
         return false;
     }
     else
     {
-        puts("Successfully opened test.cbi");
+        printf("Successfully opened %s\n", path);
     }
 
     return true;
 }
 
-bool update_frame(repeating_timer_t *rtp)
+bool verify_signature(FIL *fp)
+{
+    uint8_t signature[4] = {};
+    size_t read_size;
+    FRESULT res = f_read(fp, signature, 4, &read_size);
+
+    if (res == FR_OK && read_size != 4)
+    {
+        printf("Failed to read signature: %d\n", res);
+        return false;
+    }
+
+    if (signature[0] != 0x43 && signature[1] != 0x0d && signature[2] != 0x0a && signature[3] != 0x00)
+    {
+        printf("signature is invalid: %x, %x, %x, %x\n", signature[0], signature[1], signature[2], signature[3]);
+        return false;
+    }
+
+    return true;
+}
+
+void dump_bytes(FIL *fpp, const size_t size)
+{
+    printf("Dumping the first %d bytes...\n", size);
+    puts("\\/\\/\\/\\/ DUMP OF CUBE.CBI \\/\\/\\/\\/");
+
+    // back up the current position
+    const size_t current_pos = f_tell(fpp);
+
+    f_lseek(fpp, 0);
+
+    printf("   0  1  2  3  4  5  6  7   8  9  a  b  c  d  e  f \n");
+    printf("  -------------------------------------------------");
+
+    for (size_t i = 0; i < size; i++)
+    {
+        if (i % 16 == 0)
+        {
+            puts("");
+            printf("%02X|", i);
+        }
+        else if (i % 8 == 0)
+        {
+            printf(" ");
+        }
+
+        uint8_t byte;
+        size_t read_size;
+        FRESULT res = f_read(fpp, &byte, 1, &read_size);
+
+        if (res == FR_OK && read_size != 1)
+        {
+            break;
+        }
+
+        printf("%02X ", byte);
+    }
+
+    puts("");
+    puts("/\\/\\/\\/\\ DUMP OF CUBE.CBI /\\/\\/\\/\\");
+
+    // restore the position
+    f_lseek(fpp, current_pos);
+}
+
+bool update_frame(repeating_timer_t *prt)
 {
     static int64_t c;
     gpio_put(PICO_DEFAULT_LED_PIN, c / 10000);
@@ -225,72 +290,108 @@ bool update_frame(repeating_timer_t *rtp)
 int main()
 {
     // initialize serial communication
+    // Baud rate: 115200
     stdio_init_all();
 
-    sleep_ms(1000);
+    stdio
+
+    sleep_ms(5000);
 
     puts("INITIALIZING...");
     printf("Build timestamp: %s %s\n", __DATE__, __TIME__);
 
     initialize_gpio();
 
+    // Open patterns from SD card
+    FATFS fs = {};
     FIL fp = {};
-    bool suc_open = true;//open_file("0:test.cbi", &fp);
-    if (suc_open)
+
     {
+        bool suc_mount = mount_sd("0:", &fs);
+        bool suc_open = suc_mount ? open_file("entry.cbi", &fp) : false;
+        if (!suc_mount || !suc_open)
+        {
+            puts("Error: No cube patterns");
+            set_error_cube_pattern_and_halt();
+        }
+
         puts("Using cube patterns from SD card");
     }
-    else
+
+    // Verify signature
     {
-        puts("No cube patterns");
+        bool suc_verify = verify_signature(&fp);
+        if (!suc_verify)
+        {
+            set_error_cube_pattern_and_halt();
+        }
+
+        puts("Successfully verified signature");
     }
 
+    // Read frame count
+    int32_t frame_max = 0;
+    {
+        size_t read_size;
+        FRESULT res = f_read(&fp, &frame_max, 4, &read_size);
+
+        if (res == FR_OK && read_size != 4)
+        {
+            puts("Failed to read frame count");
+            set_error_cube_pattern_and_halt();
+        }
+
+        printf("frame count = %ld\n", frame_max);
+    }
+
+    // Initialize repeating timer
     static repeating_timer_t rt = {};
-    bool suc_timer = add_repeating_timer_us(16, &update_frame, NULL, &rt);
-    if (suc_timer) {
-        puts("Successfully registered a repeating timer");
-    }
-    else
     {
-        puts("No slot for timer");
-    }
+        bool suc_timer = add_repeating_timer_us(16, &update_frame, NULL, &rt);
+        if (!suc_timer)
+        {
+            puts("Error: No slot for timer");
+            set_error_cube_pattern_and_halt();
+        }
 
-    if (!suc_open || !suc_timer)
-    {
-        set_error_cube_pattern_and_halt();
+        puts("Successfully registered a repeating timer");
     }
 
     puts("Successfully initialized!");
+    
+    dump_bytes(&fp, 256);
 
-    set_error_cube_pattern_and_halt();
-
+    // Main loop
+    int32_t frame_count = 0;
     while (true)
     {
-        size_t read_size1, read_size2;
-        cube_t temp;
-        FRESULT res1 = f_read(&fp, &temp.frame, 5 * 13, &read_size1);
-        FRESULT res2 = f_read(&fp, &temp.duration, 4, &read_size2);
-        cube = temp;
-
-        if (res1 == FR_OK && read_size1 == 5 * 13 && res2 == FR_OK && read_size2 == 4)
+        // Read the next frame from fp
         {
-            printf("Successfully updated: duration = %d\n", cube.duration);
+            cube_t temp;
+            size_t read_size1, read_size2;
+            FRESULT res1, res2;
 
-            sleep_ms(cube.duration);
-        }
-        else
-        {
-            puts("Error on reading or EOF");
-
-            for (int i = 0; i < 5; i++)
+            res1 = f_read(&fp, &temp.frame, sizeof(temp.frame), &read_size1);
+            res2 = f_read(&fp, &temp.duration, sizeof(temp.duration), &read_size2);
+            if (res1 != FR_OK || res2 != FR_OK || read_size1 != sizeof(temp.frame) || read_size2 != sizeof(temp.duration))
             {
-                for (int j = 0; j < 13; j++)
-                {
-                    cube.frame[i][j] = 0xff;
-                }
+                printf("Error on reading frame: res1=%d, read_size1=%d, res2=%d, read_size2=%d\n", res1, read_size1, res2, read_size2);
+                set_error_cube_pattern_and_halt();
             }
 
-            sleep_ms(1000);
+            cube = temp; 
+        }
+
+        printf("Successfully updated: count=%ld/%ld, duration=%ld\n", frame_count, frame_max, cube.duration);
+
+        sleep_ms(cube.duration);
+
+        // Count up and return to 0
+        frame_count++;
+        if (frame_max <= frame_count)
+        {
+            frame_count = 0;
+            f_lseek(&fp, 8);
         }
     }
 

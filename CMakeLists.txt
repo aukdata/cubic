@@ -2,6 +2,8 @@
 
 cmake_minimum_required(VERSION 3.13)
 
+
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -24,13 +26,14 @@ project(cube C CXX ASM)
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
-
 add_executable(cube cube.c
     fatfs/ff.c
     fatfs/ffsystem.c
     fatfs/ffunicode.c
     fatfs/mmc_pico_spi.c
 )
+
+target_compile_options(cube PRIVATE -Wall -Wextra)
 
 pico_set_program_name(cube "cube")
 pico_set_program_version(cube "0.1")
